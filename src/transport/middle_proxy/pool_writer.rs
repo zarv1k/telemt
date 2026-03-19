@@ -492,11 +492,9 @@ impl MePool {
     }
 
     pub(crate) async fn remove_writer_and_close_clients(self: &Arc<Self>, writer_id: u64) {
-        let conns = self.remove_writer_only(writer_id).await;
-        for bound in conns {
-            let _ = self.registry.route(bound.conn_id, super::MeResponse::Close).await;
-            let _ = self.registry.unregister(bound.conn_id).await;
-        }
+        // Full client cleanup now happens inside `registry.writer_lost` to keep
+        // writer reap/remove paths strictly non-blocking per connection.
+        let _ = self.remove_writer_only(writer_id).await;
     }
 
     async fn remove_writer_only(self: &Arc<Self>, writer_id: u64) -> Vec<BoundConn> {
