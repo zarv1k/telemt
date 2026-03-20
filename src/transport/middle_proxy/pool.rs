@@ -18,6 +18,8 @@ use crate::transport::UpstreamManager;
 use super::ConnRegistry;
 use super::codec::WriterCommand;
 
+const ME_FORCE_CLOSE_SAFETY_FALLBACK_SECS: u64 = 300;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct RefillDcKey {
     pub dc: i32,
@@ -171,6 +173,7 @@ pub struct MePool {
     pub(super) endpoint_quarantine: Arc<Mutex<HashMap<SocketAddr, Instant>>>,
     pub(super) kdf_material_fingerprint: Arc<RwLock<HashMap<SocketAddr, (u64, u16)>>>,
     pub(super) me_pool_drain_ttl_secs: AtomicU64,
+    pub(super) me_instadrain: AtomicBool,
     pub(super) me_pool_drain_threshold: AtomicU64,
     pub(super) me_pool_drain_soft_evict_enabled: AtomicBool,
     pub(super) me_pool_drain_soft_evict_grace_secs: AtomicU64,
@@ -228,6 +231,14 @@ impl MePool {
             .as_secs()
     }
 
+    fn normalize_force_close_secs(force_close_secs: u64) -> u64 {
+        if force_close_secs == 0 {
+            ME_FORCE_CLOSE_SAFETY_FALLBACK_SECS
+        } else {
+            force_close_secs
+        }
+    }
+
     pub fn new(
         proxy_tag: Option<Vec<u8>>,
         proxy_secret: Vec<u8>,
@@ -279,6 +290,7 @@ impl MePool {
         me_adaptive_floor_max_warm_writers_global: u32,
         hardswap: bool,
         me_pool_drain_ttl_secs: u64,
+        me_instadrain: bool,
         me_pool_drain_threshold: u64,
         me_pool_drain_soft_evict_enabled: bool,
         me_pool_drain_soft_evict_grace_secs: u64,
@@ -462,6 +474,7 @@ impl MePool {
             endpoint_quarantine: Arc::new(Mutex::new(HashMap::new())),
             kdf_material_fingerprint: Arc::new(RwLock::new(HashMap::new())),
             me_pool_drain_ttl_secs: AtomicU64::new(me_pool_drain_ttl_secs),
+            me_instadrain: AtomicBool::new(me_instadrain),
             me_pool_drain_threshold: AtomicU64::new(me_pool_drain_threshold),
             me_pool_drain_soft_evict_enabled: AtomicBool::new(me_pool_drain_soft_evict_enabled),
             me_pool_drain_soft_evict_grace_secs: AtomicU64::new(me_pool_drain_soft_evict_grace_secs),
@@ -474,7 +487,9 @@ impl MePool {
             me_pool_drain_soft_evict_cooldown_ms: AtomicU64::new(
                 me_pool_drain_soft_evict_cooldown_ms.max(1),
             ),
-            me_pool_force_close_secs: AtomicU64::new(me_pool_force_close_secs),
+            me_pool_force_close_secs: AtomicU64::new(Self::normalize_force_close_secs(
+                me_pool_force_close_secs,
+            )),
             me_pool_min_fresh_ratio_permille: AtomicU32::new(Self::ratio_to_permille(
                 me_pool_min_fresh_ratio,
             )),
@@ -524,6 +539,7 @@ impl MePool {
         &self,
         hardswap: bool,
         drain_ttl_secs: u64,
+        instadrain: bool,
         pool_drain_threshold: u64,
         pool_drain_soft_evict_enabled: bool,
         pool_drain_soft_evict_grace_secs: u64,
@@ -568,6 +584,7 @@ impl MePool {
         self.hardswap.store(hardswap, Ordering::Relaxed);
         self.me_pool_drain_ttl_secs
             .store(drain_ttl_secs, Ordering::Relaxed);
+        self.me_instadrain.store(instadrain, Ordering::Relaxed);
         self.me_pool_drain_threshold
             .store(pool_drain_threshold, Ordering::Relaxed);
         self.me_pool_drain_soft_evict_enabled
@@ -582,8 +599,10 @@ impl MePool {
         );
         self.me_pool_drain_soft_evict_cooldown_ms
             .store(pool_drain_soft_evict_cooldown_ms.max(1), Ordering::Relaxed);
-        self.me_pool_force_close_secs
-            .store(force_close_secs, Ordering::Relaxed);
+        self.me_pool_force_close_secs.store(
+            Self::normalize_force_close_secs(force_close_secs),
+            Ordering::Relaxed,
+        );
         self.me_pool_min_fresh_ratio_permille
             .store(Self::ratio_to_permille(min_fresh_ratio), Ordering::Relaxed);
         self.me_hardswap_warmup_delay_min_ms
@@ -728,12 +747,9 @@ impl MePool {
     }
 
     pub(super) fn force_close_timeout(&self) -> Option<Duration> {
-        let secs = self.me_pool_force_close_secs.load(Ordering::Relaxed);
-        if secs == 0 {
-            None
-        } else {
-            Some(Duration::from_secs(secs))
-        }
+        let secs =
+            Self::normalize_force_close_secs(self.me_pool_force_close_secs.load(Ordering::Relaxed));
+        Some(Duration::from_secs(secs))
     }
 
     pub(super) fn drain_soft_evict_enabled(&self) -> bool {

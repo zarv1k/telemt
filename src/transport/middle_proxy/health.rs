@@ -10,8 +10,10 @@ use tracing::{debug, info, warn};
 use crate::config::MeFloorMode;
 use crate::crypto::SecureRandom;
 use crate::network::IpFamily;
+use crate::stats::MeWriterTeardownReason;
 
 use super::MePool;
+use super::pool::MeWriter;
 
 const JITTER_FRAC_NUM: u64 = 2; // jitter up to 50% of backoff
 #[allow(dead_code)]
@@ -30,6 +32,8 @@ const HEALTH_DRAIN_CLOSE_BUDGET_MIN: usize = 16;
 const HEALTH_DRAIN_CLOSE_BUDGET_MAX: usize = 256;
 const HEALTH_DRAIN_SOFT_EVICT_BUDGET_MIN: usize = 8;
 const HEALTH_DRAIN_SOFT_EVICT_BUDGET_MAX: usize = 256;
+const HEALTH_DRAIN_REAP_OPPORTUNISTIC_INTERVAL_SECS: u64 = 1;
+const HEALTH_DRAIN_TIMEOUT_ENFORCER_INTERVAL_SECS: u64 = 1;
 
 #[derive(Debug, Clone)]
 struct DcFloorPlanEntry {
@@ -99,6 +103,8 @@ pub async fn me_health_monitor(pool: Arc<MePool>, rng: Arc<SecureRandom>, _min_c
             &mut adaptive_idle_since,
             &mut adaptive_recover_until,
             &mut floor_warn_next_allowed,
+            &mut drain_warn_next_allowed,
+            &mut drain_soft_evict_next_allowed,
         )
         .await;
         let v6_degraded = check_family(
@@ -116,10 +122,61 @@ pub async fn me_health_monitor(pool: Arc<MePool>, rng: Arc<SecureRandom>, _min_c
             &mut adaptive_idle_since,
             &mut adaptive_recover_until,
             &mut floor_warn_next_allowed,
+            &mut drain_warn_next_allowed,
+            &mut drain_soft_evict_next_allowed,
         )
         .await;
         degraded_interval = v4_degraded || v6_degraded;
     }
+}
+
+pub async fn me_drain_timeout_enforcer(pool: Arc<MePool>) {
+    let mut drain_warn_next_allowed: HashMap<u64, Instant> = HashMap::new();
+    let mut drain_soft_evict_next_allowed: HashMap<u64, Instant> = HashMap::new();
+    loop {
+        tokio::time::sleep(Duration::from_secs(
+            HEALTH_DRAIN_TIMEOUT_ENFORCER_INTERVAL_SECS,
+        ))
+        .await;
+        reap_draining_writers(
+            &pool,
+            &mut drain_warn_next_allowed,
+            &mut drain_soft_evict_next_allowed,
+        )
+        .await;
+    }
+}
+
+fn draining_writer_timeout_expired(
+    pool: &MePool,
+    writer: &MeWriter,
+    now_epoch_secs: u64,
+    drain_ttl_secs: u64,
+) -> bool {
+    if pool
+        .me_instadrain
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return true;
+    }
+
+    let deadline_epoch_secs = writer
+        .drain_deadline_epoch_secs
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if deadline_epoch_secs != 0 {
+        return now_epoch_secs >= deadline_epoch_secs;
+    }
+
+    if drain_ttl_secs == 0 {
+        return false;
+    }
+    let drain_started_at_epoch_secs = writer
+        .draining_started_at_epoch_secs
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if drain_started_at_epoch_secs == 0 {
+        return false;
+    }
+    now_epoch_secs.saturating_sub(drain_started_at_epoch_secs) > drain_ttl_secs
 }
 
 pub(super) async fn reap_draining_writers(
@@ -137,9 +194,14 @@ pub(super) async fn reap_draining_writers(
     let activity = pool.registry.writer_activity_snapshot().await;
     let mut draining_writers = Vec::new();
     let mut empty_writer_ids = Vec::<u64>::new();
+    let mut timeout_expired_writer_ids = Vec::<u64>::new();
     let mut force_close_writer_ids = Vec::<u64>::new();
     for writer in writers {
         if !writer.draining.load(std::sync::atomic::Ordering::Relaxed) {
+            continue;
+        }
+        if draining_writer_timeout_expired(pool, &writer, now_epoch_secs, drain_ttl_secs) {
+            timeout_expired_writer_ids.push(writer.id);
             continue;
         }
         if activity
@@ -206,14 +268,6 @@ pub(super) async fn reap_draining_writers(
                 allow_drain_fallback = writer.allow_drain_fallback.load(std::sync::atomic::Ordering::Relaxed),
                 "ME draining writer remains non-empty past drain TTL"
             );
-        }
-        let deadline_epoch_secs = writer
-            .drain_deadline_epoch_secs
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if deadline_epoch_secs != 0 && now_epoch_secs >= deadline_epoch_secs {
-            warn!(writer_id = writer.id, "Drain timeout, force-closing");
-            force_close_writer_ids.push(writer.id);
-            active_draining_writer_ids.remove(&writer.id);
         }
     }
 
@@ -299,11 +353,22 @@ pub(super) async fn reap_draining_writers(
         }
     }
 
-    let close_budget = health_drain_close_budget();
+    let mut closed_writer_ids = HashSet::<u64>::new();
+    for writer_id in timeout_expired_writer_ids {
+        if !closed_writer_ids.insert(writer_id) {
+            continue;
+        }
+        pool.stats.increment_pool_force_close_total();
+        pool.remove_writer_and_close_clients(writer_id, MeWriterTeardownReason::ReapTimeoutExpired)
+            .await;
+        pool.stats
+            .increment_me_draining_writers_reap_progress_total();
+    }
+
     let requested_force_close = force_close_writer_ids.len();
     let requested_empty_close = empty_writer_ids.len();
     let requested_close_total = requested_force_close.saturating_add(requested_empty_close);
-    let mut closed_writer_ids = HashSet::<u64>::new();
+    let close_budget = health_drain_close_budget();
     let mut closed_total = 0usize;
     for writer_id in force_close_writer_ids {
         if closed_total >= close_budget {
@@ -313,7 +378,8 @@ pub(super) async fn reap_draining_writers(
             continue;
         }
         pool.stats.increment_pool_force_close_total();
-        pool.remove_writer_and_close_clients(writer_id).await;
+        pool.remove_writer_and_close_clients(writer_id, MeWriterTeardownReason::ReapThresholdForce)
+            .await;
         pool.stats
             .increment_me_draining_writers_reap_progress_total();
         closed_total = closed_total.saturating_add(1);
@@ -325,7 +391,8 @@ pub(super) async fn reap_draining_writers(
         if !closed_writer_ids.insert(writer_id) {
             continue;
         }
-        pool.remove_writer_and_close_clients(writer_id).await;
+        pool.remove_writer_and_close_clients(writer_id, MeWriterTeardownReason::ReapEmpty)
+            .await;
         pool.stats
             .increment_me_draining_writers_reap_progress_total();
         closed_total = closed_total.saturating_add(1);
@@ -396,6 +463,8 @@ async fn check_family(
     adaptive_idle_since: &mut HashMap<(i32, IpFamily), Instant>,
     adaptive_recover_until: &mut HashMap<(i32, IpFamily), Instant>,
     floor_warn_next_allowed: &mut HashMap<(i32, IpFamily), Instant>,
+    drain_warn_next_allowed: &mut HashMap<u64, Instant>,
+    drain_soft_evict_next_allowed: &mut HashMap<u64, Instant>,
 ) -> bool {
     let enabled = match family {
         IpFamily::V4 => pool.decision.ipv4_me,
@@ -476,8 +545,15 @@ async fn check_family(
         floor_plan.active_writers_current,
         floor_plan.warm_writers_current,
     );
+    let mut next_drain_reap_at = Instant::now();
 
     for (dc, endpoints) in dc_endpoints {
+        if Instant::now() >= next_drain_reap_at {
+            reap_draining_writers(pool, drain_warn_next_allowed, drain_soft_evict_next_allowed)
+                .await;
+            next_drain_reap_at = Instant::now()
+                + Duration::from_secs(HEALTH_DRAIN_REAP_OPPORTUNISTIC_INTERVAL_SECS);
+        }
         if endpoints.is_empty() {
             continue;
         }
@@ -621,6 +697,12 @@ async fn check_family(
 
         let mut restored = 0usize;
         for _ in 0..missing {
+            if Instant::now() >= next_drain_reap_at {
+                reap_draining_writers(pool, drain_warn_next_allowed, drain_soft_evict_next_allowed)
+                    .await;
+                next_drain_reap_at = Instant::now()
+                    + Duration::from_secs(HEALTH_DRAIN_REAP_OPPORTUNISTIC_INTERVAL_SECS);
+            }
             if reconnect_budget == 0 {
                 break;
             }
@@ -1472,6 +1554,187 @@ async fn maybe_rotate_single_endpoint_shadow(
     );
 }
 
+/// Last-resort safety net for draining writers stuck past their deadline.
+///
+/// Runs every `TICK_SECS` and force-closes any draining writer whose
+/// `drain_deadline_epoch_secs` has been exceeded by more than a threshold.
+///
+/// Two thresholds:
+///   - `SOFT_THRESHOLD_SECS` (60s): writers with no bound clients
+///   - `HARD_THRESHOLD_SECS` (300s): writers WITH bound clients (unconditional)
+///
+/// Intentionally kept trivial and independent of pool config to minimise
+/// the probability of panicking itself. Uses `SystemTime` directly
+/// as a fallback clock source and timeouts on every lock acquisition
+/// and writer removal so one stuck writer cannot block the rest.
+pub async fn me_zombie_writer_watchdog(pool: Arc<MePool>) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TICK_SECS: u64 = 30;
+    const SOFT_THRESHOLD_SECS: u64 = 60;
+    const HARD_THRESHOLD_SECS: u64 = 300;
+    const LOCK_TIMEOUT_SECS: u64 = 5;
+    const REMOVE_TIMEOUT_SECS: u64 = 10;
+    const HARD_DETACH_TIMEOUT_STREAK: u8 = 3;
+
+    let mut removal_timeout_streak = HashMap::<u64, u8>::new();
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
+
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => continue,
+        };
+
+        // Phase 1: collect zombie IDs under a short read-lock with timeout.
+        let zombie_ids_with_meta: Vec<(u64, bool)> = {
+            let Ok(ws) = tokio::time::timeout(
+                Duration::from_secs(LOCK_TIMEOUT_SECS),
+                pool.writers.read(),
+            )
+            .await
+            else {
+                warn!("zombie_watchdog: writers read-lock timeout, skipping tick");
+                continue;
+            };
+            ws.iter()
+                .filter(|w| w.draining.load(std::sync::atomic::Ordering::Relaxed))
+                .filter_map(|w| {
+                    let deadline = w
+                        .drain_deadline_epoch_secs
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if deadline == 0 {
+                        return None;
+                    }
+                    let overdue = now.saturating_sub(deadline);
+                    if overdue == 0 {
+                        return None;
+                    }
+                    let started = w
+                        .draining_started_at_epoch_secs
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let drain_age = now.saturating_sub(started);
+                    if drain_age > HARD_THRESHOLD_SECS {
+                        return Some((w.id, true));
+                    }
+                    if overdue > SOFT_THRESHOLD_SECS {
+                        return Some((w.id, false));
+                    }
+                    None
+                })
+                .collect()
+        };
+        // read lock released here
+
+        if zombie_ids_with_meta.is_empty() {
+            removal_timeout_streak.clear();
+            continue;
+        }
+
+        let mut active_zombie_ids = HashSet::<u64>::with_capacity(zombie_ids_with_meta.len());
+        for (writer_id, _) in &zombie_ids_with_meta {
+            active_zombie_ids.insert(*writer_id);
+        }
+        removal_timeout_streak.retain(|writer_id, _| active_zombie_ids.contains(writer_id));
+
+        warn!(
+            zombie_count = zombie_ids_with_meta.len(),
+            soft_threshold_secs = SOFT_THRESHOLD_SECS,
+            hard_threshold_secs = HARD_THRESHOLD_SECS,
+            "Zombie draining writers detected by watchdog, force-closing"
+        );
+
+        // Phase 2: remove each writer individually with a timeout.
+        // One stuck removal cannot block the rest.
+        for (writer_id, had_clients) in &zombie_ids_with_meta {
+            let result = tokio::time::timeout(
+                Duration::from_secs(REMOVE_TIMEOUT_SECS),
+                pool.remove_writer_and_close_clients(
+                    *writer_id,
+                    MeWriterTeardownReason::WatchdogStuckDraining,
+                ),
+            )
+            .await;
+            match result {
+                Ok(true) => {
+                    removal_timeout_streak.remove(writer_id);
+                    pool.stats.increment_pool_force_close_total();
+                    pool.stats
+                        .increment_me_draining_writers_reap_progress_total();
+                    info!(
+                        writer_id,
+                        had_clients,
+                        "Zombie writer removed by watchdog"
+                    );
+                }
+                Ok(false) => {
+                    removal_timeout_streak.remove(writer_id);
+                    debug!(
+                        writer_id,
+                        had_clients,
+                        "Zombie writer watchdog removal became no-op"
+                    );
+                }
+                Err(_) => {
+                    pool.stats.increment_me_writer_teardown_timeout_total();
+                    let streak = removal_timeout_streak
+                        .entry(*writer_id)
+                        .and_modify(|value| *value = value.saturating_add(1))
+                        .or_insert(1);
+                    warn!(
+                        writer_id,
+                        had_clients,
+                        timeout_streak = *streak,
+                        "Zombie writer removal timed out"
+                    );
+                    if *streak < HARD_DETACH_TIMEOUT_STREAK {
+                        continue;
+                    }
+                    pool.stats.increment_me_writer_teardown_escalation_total();
+
+                    let hard_detach = tokio::time::timeout(
+                        Duration::from_secs(REMOVE_TIMEOUT_SECS),
+                        pool.remove_draining_writer_hard_detach(
+                            *writer_id,
+                            MeWriterTeardownReason::WatchdogStuckDraining,
+                        ),
+                    )
+                    .await;
+                    match hard_detach {
+                        Ok(true) => {
+                            removal_timeout_streak.remove(writer_id);
+                            pool.stats.increment_pool_force_close_total();
+                            pool.stats
+                                .increment_me_draining_writers_reap_progress_total();
+                            info!(
+                                writer_id,
+                                had_clients,
+                                "Zombie writer hard-detached after repeated timeouts"
+                            );
+                        }
+                        Ok(false) => {
+                            removal_timeout_streak.remove(writer_id);
+                            debug!(
+                                writer_id,
+                                had_clients,
+                                "Zombie hard-detach skipped (writer already gone or no longer draining)"
+                            );
+                        }
+                        Err(_) => {
+                            pool.stats.increment_me_writer_teardown_timeout_total();
+                            warn!(
+                                writer_id,
+                                had_clients,
+                                "Zombie hard-detach timed out, will retry next tick"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1548,6 +1811,7 @@ mod tests {
             general.me_adaptive_floor_max_warm_writers_global,
             general.hardswap,
             general.me_pool_drain_ttl_secs,
+            general.me_instadrain,
             general.me_pool_drain_threshold,
             general.me_pool_drain_soft_evict_enabled,
             general.me_pool_drain_soft_evict_grace_secs,

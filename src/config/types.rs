@@ -135,8 +135,8 @@ impl MeSocksKdfPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MeBindStaleMode {
-    Never,
     #[default]
+    Never,
     Ttl,
     Always,
 }
@@ -812,6 +812,10 @@ pub struct GeneralConfig {
     #[serde(default = "default_me_pool_drain_ttl_secs")]
     pub me_pool_drain_ttl_secs: u64,
 
+    /// Force-remove any draining writer on the next cleanup tick, regardless of age/deadline.
+    #[serde(default = "default_me_instadrain")]
+    pub me_instadrain: bool,
+
     /// Maximum allowed number of draining ME writers before oldest ones are force-closed in batches.
     /// Set to 0 to disable threshold-based draining cleanup and keep timeout-only behavior.
     #[serde(default = "default_me_pool_drain_threshold")]
@@ -851,7 +855,7 @@ pub struct GeneralConfig {
     pub me_pool_min_fresh_ratio: f32,
 
     /// Drain timeout in seconds for stale ME writers after endpoint map changes.
-    /// Set to 0 to keep stale writers draining indefinitely (no force-close).
+    /// Set to 0 to use the runtime safety fallback timeout.
     #[serde(default = "default_me_reinit_drain_timeout_secs")]
     pub me_reinit_drain_timeout_secs: u64,
 
@@ -1036,6 +1040,7 @@ impl Default for GeneralConfig {
             me_secret_atomic_snapshot: default_me_secret_atomic_snapshot(),
             proxy_secret_len_max: default_proxy_secret_len_max(),
             me_pool_drain_ttl_secs: default_me_pool_drain_ttl_secs(),
+            me_instadrain: default_me_instadrain(),
             me_pool_drain_threshold: default_me_pool_drain_threshold(),
             me_pool_drain_soft_evict_enabled: default_me_pool_drain_soft_evict_enabled(),
             me_pool_drain_soft_evict_grace_secs: default_me_pool_drain_soft_evict_grace_secs(),
@@ -1081,8 +1086,13 @@ impl GeneralConfig {
 
     /// Resolve force-close timeout for stale writers.
     /// `me_reinit_drain_timeout_secs` remains backward-compatible alias.
+    /// A configured `0` uses the runtime safety fallback (300s).
     pub fn effective_me_pool_force_close_secs(&self) -> u64 {
-        self.me_reinit_drain_timeout_secs
+        if self.me_reinit_drain_timeout_secs == 0 {
+            300
+        } else {
+            self.me_reinit_drain_timeout_secs
+        }
     }
 }
 
