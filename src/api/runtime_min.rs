@@ -179,6 +179,7 @@ pub(super) struct RuntimeUpstreamQualitySummaryData {
     pub(super) direct_total: usize,
     pub(super) socks4_total: usize,
     pub(super) socks5_total: usize,
+    pub(super) shadowsocks_total: usize,
 }
 
 #[derive(Serialize)]
@@ -445,7 +446,9 @@ pub(super) async fn build_runtime_upstream_quality_data(
         connect_attempt_total: shared.stats.get_upstream_connect_attempt_total(),
         connect_success_total: shared.stats.get_upstream_connect_success_total(),
         connect_fail_total: shared.stats.get_upstream_connect_fail_total(),
-        connect_failfast_hard_error_total: shared.stats.get_upstream_connect_failfast_hard_error_total(),
+        connect_failfast_hard_error_total: shared
+            .stats
+            .get_upstream_connect_failfast_hard_error_total(),
     };
 
     let Some(snapshot) = shared.upstream_manager.try_api_snapshot() else {
@@ -485,6 +488,7 @@ pub(super) async fn build_runtime_upstream_quality_data(
             direct_total: snapshot.summary.direct_total,
             socks4_total: snapshot.summary.socks4_total,
             socks5_total: snapshot.summary.socks5_total,
+            shadowsocks_total: snapshot.summary.shadowsocks_total,
         }),
         upstreams: Some(
             snapshot
@@ -496,6 +500,7 @@ pub(super) async fn build_runtime_upstream_quality_data(
                         crate::transport::UpstreamRouteKind::Direct => "direct",
                         crate::transport::UpstreamRouteKind::Socks4 => "socks4",
                         crate::transport::UpstreamRouteKind::Socks5 => "socks5",
+                        crate::transport::UpstreamRouteKind::Shadowsocks => "shadowsocks",
                     },
                     address: upstream.address,
                     weight: upstream.weight,
@@ -515,7 +520,9 @@ pub(super) async fn build_runtime_upstream_quality_data(
                                 crate::transport::upstream::IpPreference::PreferV6 => "prefer_v6",
                                 crate::transport::upstream::IpPreference::PreferV4 => "prefer_v4",
                                 crate::transport::upstream::IpPreference::BothWork => "both_work",
-                                crate::transport::upstream::IpPreference::Unavailable => "unavailable",
+                                crate::transport::upstream::IpPreference::Unavailable => {
+                                    "unavailable"
+                                }
                             },
                         })
                         .collect(),
@@ -553,14 +560,18 @@ pub(super) async fn build_runtime_nat_stun_data(shared: &ApiShared) -> RuntimeNa
                 live_total: snapshot.live_servers.len(),
             },
             reflection: RuntimeNatStunReflectionBlockData {
-                v4: snapshot.reflection_v4.map(|entry| RuntimeNatStunReflectionData {
-                    addr: entry.addr.to_string(),
-                    age_secs: entry.age_secs,
-                }),
-                v6: snapshot.reflection_v6.map(|entry| RuntimeNatStunReflectionData {
-                    addr: entry.addr.to_string(),
-                    age_secs: entry.age_secs,
-                }),
+                v4: snapshot
+                    .reflection_v4
+                    .map(|entry| RuntimeNatStunReflectionData {
+                        addr: entry.addr.to_string(),
+                        age_secs: entry.age_secs,
+                    }),
+                v6: snapshot
+                    .reflection_v6
+                    .map(|entry| RuntimeNatStunReflectionData {
+                        addr: entry.addr.to_string(),
+                        age_secs: entry.age_secs,
+                    }),
             },
             stun_backoff_remaining_ms: snapshot.stun_backoff_remaining_ms,
         }),
