@@ -1240,9 +1240,10 @@ pub struct ServerConfig {
 
     /// Trusted source CIDRs allowed to send incoming PROXY protocol headers.
     ///
-    /// When non-empty, connections from addresses outside this allowlist are
-    /// rejected before `src_addr` is applied.
-    #[serde(default)]
+    /// If this field is omitted in config, it defaults to trust-all CIDRs
+    /// (`0.0.0.0/0` and `::/0`). If it is explicitly set to an empty list,
+    /// all PROXY protocol headers are rejected.
+    #[serde(default = "default_proxy_protocol_trusted_cidrs")]
     pub proxy_protocol_trusted_cidrs: Vec<IpNetwork>,
 
     /// Port for the Prometheus-compatible metrics endpoint.
@@ -1287,7 +1288,7 @@ impl Default for ServerConfig {
             listen_tcp: None,
             proxy_protocol: false,
             proxy_protocol_header_timeout_ms: default_proxy_protocol_header_timeout_ms(),
-            proxy_protocol_trusted_cidrs: Vec::new(),
+            proxy_protocol_trusted_cidrs: default_proxy_protocol_trusted_cidrs(),
             metrics_port: None,
             metrics_listen: None,
             metrics_whitelist: default_metrics_whitelist(),

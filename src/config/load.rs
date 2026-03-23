@@ -1263,6 +1263,10 @@ mod tests {
         assert_eq!(cfg.general.update_every, default_update_every());
         assert_eq!(cfg.server.listen_addr_ipv4, default_listen_addr_ipv4());
         assert_eq!(cfg.server.listen_addr_ipv6, default_listen_addr_ipv6_opt());
+        assert_eq!(
+            cfg.server.proxy_protocol_trusted_cidrs,
+            default_proxy_protocol_trusted_cidrs()
+        );
         assert_eq!(cfg.server.api.listen, default_api_listen());
         assert_eq!(cfg.server.api.whitelist, default_api_whitelist());
         assert_eq!(
@@ -1395,6 +1399,10 @@ mod tests {
 
         let server = ServerConfig::default();
         assert_eq!(server.listen_addr_ipv6, Some(default_listen_addr_ipv6()));
+        assert_eq!(
+            server.proxy_protocol_trusted_cidrs,
+            default_proxy_protocol_trusted_cidrs()
+        );
         assert_eq!(server.api.listen, default_api_listen());
         assert_eq!(server.api.whitelist, default_api_whitelist());
         assert_eq!(
@@ -1428,6 +1436,41 @@ mod tests {
 
         let access = AccessConfig::default();
         assert_eq!(access.users, default_access_users());
+    }
+
+    #[test]
+    fn proxy_protocol_trusted_cidrs_missing_uses_trust_all_but_explicit_empty_stays_empty() {
+        let cfg_missing: ProxyConfig = toml::from_str(
+            r#"
+            [server]
+            [general]
+            [network]
+            [access]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg_missing.server.proxy_protocol_trusted_cidrs,
+            default_proxy_protocol_trusted_cidrs()
+        );
+
+        let cfg_explicit_empty: ProxyConfig = toml::from_str(
+            r#"
+            [server]
+            proxy_protocol_trusted_cidrs = []
+
+            [general]
+            [network]
+            [access]
+            "#,
+        )
+        .unwrap();
+        assert!(
+            cfg_explicit_empty
+                .server
+                .proxy_protocol_trusted_cidrs
+                .is_empty()
+        );
     }
 
     #[test]
