@@ -10,8 +10,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+# ==========================
+# Formatting
+# ==========================
+  fmt:
+    name: Fmt
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (rustfmt only)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+# ==========================
+# Tests + Clippy + Udeps
+# ==========================
   test:
-    name: Test / Lint / Analysis
+    name: Test / Clippy / Udeps
     runs-on: ubuntu-latest
 
     permissions:
@@ -23,10 +48,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install latest stable Rust toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - name: Cache cargo registry & build artifacts
         uses: actions/cache@v4
@@ -45,9 +70,6 @@ jobs:
       # clippy не валит билд (осознанно)
       - name: Run clippy
         run: cargo clippy -- --cap-lints warn
-
-      - name: Check formatting
-        run: cargo fmt -- --check
 
       - name: Install cargo-udeps
         run: cargo install cargo-udeps || true
