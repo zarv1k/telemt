@@ -104,10 +104,10 @@ jobs:
   build-musl:
     name: MUSL ${{ matrix.target }}
     runs-on: ubuntu-latest
-
+  
     container:
       image: rust:slim-bookworm
-
+  
     strategy:
       fail-fast: false
       matrix:
@@ -116,18 +116,54 @@ jobs:
             asset: telemt-x86_64-linux-musl
           - target: aarch64-unknown-linux-musl
             asset: telemt-aarch64-linux-musl
-
+  
     steps:
       - uses: actions/checkout@v4
-
+  
       - name: Install deps
         run: |
           apt-get update
-          apt-get install -y musl-tools pkg-config curl
-
+          apt-get install -y \
+            musl-tools \
+            pkg-config \
+            curl
+  
+      - uses: actions/cache@v4
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        with:
+          path: ~/.musl-aarch64
+          key: musl-toolchain-aarch64-v1
+  
+      - name: Install aarch64 musl toolchain
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          set -e
+  
+          TOOLCHAIN_DIR="$HOME/.musl-aarch64"
+          ARCHIVE="aarch64-linux-musl-cross.tgz"
+          URL="https://github.com/telemt/telemt/releases/download/toolchains/$ARCHIVE"
+  
+          if [ -x "$TOOLCHAIN_DIR/bin/aarch64-linux-musl-gcc" ]; then
+            echo "✅ MUSL toolchain cached"
+          else
+            echo "⬇️ Downloading MUSL toolchain..."
+  
+            curl -fL \
+              --retry 5 \
+              --retry-delay 3 \
+              --connect-timeout 10 \
+              --max-time 120 \
+              -o "$ARCHIVE" "$URL"
+  
+            mkdir -p "$TOOLCHAIN_DIR"
+            tar -xzf "$ARCHIVE" --strip-components=1 -C "$TOOLCHAIN_DIR"
+          fi
+  
+          echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
+  
       - name: Add rust target
         run: rustup target add ${{ matrix.target }}
-
+  
       - uses: actions/cache@v4
         with:
           path: |
@@ -135,31 +171,33 @@ jobs:
             /usr/local/cargo/git
             target
           key: musl-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-
+  
       - name: Build
         run: |
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
             export CC=aarch64-linux-musl-gcc
+            export CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc
             export RUSTFLAGS="-C target-feature=+crt-static -C linker=aarch64-linux-musl-gcc"
           else
             export CC=musl-gcc
+            export CC_x86_64_unknown_linux_musl=musl-gcc
             export RUSTFLAGS="-C target-feature=+crt-static"
           fi
-
+  
           cargo build --release --target ${{ matrix.target }}
-
+  
       - name: Package
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/telemt
-
+  
           cd dist
           tar -czf ${{ matrix.asset }}.tar.gz \
             --owner=0 --group=0 --numeric-owner \
             telemt
-
+  
           sha256sum ${{ matrix.asset }}.tar.gz > ${{ matrix.asset }}.sha256
-
+  
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
