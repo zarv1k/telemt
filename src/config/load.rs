@@ -74,7 +74,11 @@ impl UserAuthSnapshot {
                 .entry(Self::sni_lookup_hash(user))
                 .or_insert_with(Vec::new)
                 .push(user_id);
-            if let Some(initial) = user.as_bytes().first().map(|byte| byte.to_ascii_lowercase()) {
+            if let Some(initial) = user
+                .as_bytes()
+                .first()
+                .map(|byte| byte.to_ascii_lowercase())
+            {
                 sni_initial_index
                     .entry(initial)
                     .or_insert_with(Vec::new)
@@ -110,7 +114,10 @@ impl UserAuthSnapshot {
     }
 
     pub(crate) fn sni_initial_candidates(&self, sni: &str) -> Option<&[u32]> {
-        let initial = sni.as_bytes().first().map(|byte| byte.to_ascii_lowercase())?;
+        let initial = sni
+            .as_bytes()
+            .first()
+            .map(|byte| byte.to_ascii_lowercase())?;
         self.sni_initial_index.get(&initial).map(Vec::as_slice)
     }
 

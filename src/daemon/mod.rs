@@ -376,7 +376,9 @@ pub fn drop_privileges(
         unistd::setuid(uid).map_err(DaemonError::PrivilegeDrop)?;
         info!(uid = uid.as_raw(), "Dropped user privileges");
 
-        if uid.as_raw() != 0 && let Some(pid) = pid_file {
+        if uid.as_raw() != 0
+            && let Some(pid) = pid_file
+        {
             let parent = pid.path.parent().unwrap_or(Path::new("."));
             let probe_path = parent.join(format!(
                 ".telemt_pid_probe_{}_{}",

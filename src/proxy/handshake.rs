@@ -7,16 +7,16 @@ use dashmap::mapref::entry::Entry;
 use hmac::{Hmac, Mac};
 #[cfg(test)]
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 #[cfg(test)]
 use std::collections::hash_map::RandomState;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv6Addr};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, trace, warn};
@@ -358,11 +358,10 @@ fn validate_mtproto_secret_candidate(
     config: &ProxyConfig,
     is_tls: bool,
 ) -> Option<MtprotoCandidateValidation> {
-    let mut dec_key_input = [0u8; PREKEY_LEN + ACCESS_SECRET_BYTES];
-    dec_key_input[..PREKEY_LEN].copy_from_slice(dec_prekey);
-    dec_key_input[PREKEY_LEN..].copy_from_slice(secret);
-    let dec_key = sha256(&dec_key_input);
-    dec_key_input.zeroize();
+    let mut dec_key_input = Zeroizing::new(Vec::with_capacity(PREKEY_LEN + secret.len()));
+    dec_key_input.extend_from_slice(dec_prekey);
+    dec_key_input.extend_from_slice(secret);
+    let dec_key = Zeroizing::new(sha256(&dec_key_input));
 
     let mut decryptor = AesCtr::new(&dec_key, dec_iv);
     let mut decrypted = *handshake;
@@ -381,20 +380,19 @@ fn validate_mtproto_secret_candidate(
 
     let dc_idx = i16::from_le_bytes([decrypted[DC_IDX_POS], decrypted[DC_IDX_POS + 1]]);
 
-    let mut enc_key_input = [0u8; PREKEY_LEN + ACCESS_SECRET_BYTES];
-    enc_key_input[..PREKEY_LEN].copy_from_slice(enc_prekey);
-    enc_key_input[PREKEY_LEN..].copy_from_slice(secret);
-    let enc_key = sha256(&enc_key_input);
-    enc_key_input.zeroize();
+    let mut enc_key_input = Zeroizing::new(Vec::with_capacity(PREKEY_LEN + secret.len()));
+    enc_key_input.extend_from_slice(enc_prekey);
+    enc_key_input.extend_from_slice(secret);
+    let enc_key = Zeroizing::new(sha256(&enc_key_input));
 
     let encryptor = AesCtr::new(&enc_key, enc_iv);
 
     Some(MtprotoCandidateValidation {
         proto_tag,
         dc_idx,
-        dec_key,
+        dec_key: *dec_key,
         dec_iv,
-        enc_key,
+        enc_key: *enc_key,
         enc_iv,
         decryptor,
         encryptor,
@@ -1192,7 +1190,9 @@ where
             .as_deref()
             .and_then(|sni| sticky_hint_get_by_sni(shared, sni));
         let sticky_prefix_hint = sticky_hint_get_by_ip_prefix(shared, peer.ip());
-        let sni_candidates = client_sni.as_deref().and_then(|sni| snapshot.sni_candidates(sni));
+        let sni_candidates = client_sni
+            .as_deref()
+            .and_then(|sni| snapshot.sni_candidates(sni));
         let sni_initial_candidates = client_sni
             .as_deref()
             .and_then(|sni| snapshot.sni_initial_candidates(sni));
@@ -1256,7 +1256,8 @@ where
             matched = try_user_id!(user_id);
         }
 
-        if !matched && !budget_exhausted
+        if !matched
+            && !budget_exhausted
             && let Some(candidate_ids) = sni_candidates
         {
             for &user_id in candidate_ids {
@@ -1270,7 +1271,8 @@ where
             }
         }
 
-        if !matched && !budget_exhausted
+        if !matched
+            && !budget_exhausted
             && let Some(candidate_ids) = sni_initial_candidates
         {
             for &user_id in candidate_ids {
@@ -1730,13 +1732,15 @@ where
             return HandshakeResult::BadClient { reader, writer };
         }
 
+        let dec_key = Zeroizing::new(validation.dec_key);
+        let enc_key = Zeroizing::new(validation.enc_key);
         let success = HandshakeSuccess {
             user: matched_user.clone(),
             dc_idx: validation.dc_idx,
             proto_tag: validation.proto_tag,
-            dec_key: validation.dec_key,
+            dec_key: *dec_key,
             dec_iv: validation.dec_iv,
-            enc_key: validation.enc_key,
+            enc_key: *enc_key,
             enc_iv: validation.enc_iv,
             peer,
             is_tls,
@@ -1806,13 +1810,15 @@ where
                 return HandshakeResult::BadClient { reader, writer };
             }
 
+            let dec_key = Zeroizing::new(validation.dec_key);
+            let enc_key = Zeroizing::new(validation.enc_key);
             let success = HandshakeSuccess {
                 user: user.clone(),
                 dc_idx: validation.dc_idx,
                 proto_tag: validation.proto_tag,
-                dec_key: validation.dec_key,
+                dec_key: *dec_key,
                 dec_iv: validation.dec_iv,
-                enc_key: validation.enc_key,
+                enc_key: *enc_key,
                 enc_iv: validation.enc_iv,
                 peer,
                 is_tls,

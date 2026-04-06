@@ -4,8 +4,8 @@ use dashmap::DashMap;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
 
@@ -1127,10 +1127,7 @@ async fn tls_runtime_snapshot_updates_sticky_and_recent_hints() {
         "successful runtime-snapshot auth must seed sticky ip cache"
     );
     assert_eq!(
-        shared
-            .handshake
-            .sticky_user_by_ip_prefix
-            .len(),
+        shared.handshake.sticky_user_by_ip_prefix.len(),
         1,
         "successful runtime-snapshot auth must seed sticky prefix cache"
     );
@@ -1150,10 +1147,10 @@ async fn tls_overload_budget_limits_candidate_scan_depth() {
     config.access.users.clear();
     config.access.ignore_time_skew = true;
     for idx in 0..32u8 {
-        config
-            .access
-            .users
-            .insert(format!("user-{idx}"), format!("{:032x}", u128::from(idx) + 1));
+        config.access.users.insert(
+            format!("user-{idx}"),
+            format!("{:032x}", u128::from(idx) + 1),
+        );
     }
     config.rebuild_runtime_user_auth().unwrap();
 
