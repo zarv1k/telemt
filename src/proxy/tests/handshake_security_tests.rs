@@ -1206,6 +1206,7 @@ async fn tls_overload_budget_limits_candidate_scan_depth() {
 #[tokio::test]
 async fn mtproto_runtime_snapshot_prefers_preferred_user_hint() {
     let mut config = ProxyConfig::default();
+    config.general.modes.secure = true;
     config.access.users.clear();
     config.access.ignore_time_skew = true;
     config.access.users.insert(
