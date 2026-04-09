@@ -101,7 +101,7 @@ Security is both technical and behavioral.
 
 ---
 
-## 6. Openness
+## Openness
 
 Telemt is open to contributors of different backgrounds, experience levels, and working styles.
 
