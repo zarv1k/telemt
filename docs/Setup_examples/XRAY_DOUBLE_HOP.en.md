@@ -40,6 +40,11 @@ xray x25519
 openssl rand -hex 16
 # Save the output (e.g.: 0123456789abcdef0123456789abcdef) — this is <SHORT_ID>
 ```
+4. **Random Path (for xhttp):**
+```bash
+openssl rand -hex 8
+# Save the output (e.g., abc123def456) to replace <YOUR_RANDOM_PATH> in configs
+```
 
 ---
 
@@ -61,6 +66,7 @@ File content:
   },
   "inbounds": [
     {
+      "tag": "vless-in",
       "port": 443,
       "protocol": "vless",
       "settings": {
@@ -72,7 +78,7 @@ File content:
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "xhttp",
         "security": "reality",
         "realitySettings": {
           "dest": "yahoo.com:443",
@@ -83,31 +89,32 @@ File content:
           "shortIds": [
             "<SHORT_ID>"
           ]
+        },
+        "xhttpSettings": {
+          "path": "/<YOUR_RANDOM_PATH>",
+          "mode": "auto"
         }
-      },
-      "sockopt": {
-        "tcpFastOpen": true,
-        "tcpNoDelay": true,
-        "tcpKeepAliveIdle": 60,
-        "tcpKeepAliveInterval": 15
       }
     }
   ],
   "outbounds": [
     {
+      "tag": "tunnel-to-telemt",
       "protocol": "freedom",
-      "tag": "direct",
       "settings": {
         "destination": "127.0.0.1:8443"
       }
     }
   ],
   "routing": {
+    "domainStrategy": "AsIs",
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["all-in"],
-        "outboundTag": "direct"
+        "inboundTag": [
+          "vless-in"
+        ],
+        "outboundTag": "tunnel-to-telemt"
       }
     ]
   }
@@ -156,6 +163,7 @@ File content:
   ],
   "outbounds": [
     {
+      "tag": "vless-out",
       "protocol": "vless",
       "settings": {
         "vnext": [
@@ -172,27 +180,18 @@ File content:
         ]
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "xhttp",
         "security": "reality",
         "realitySettings": {
           "serverName": "yahoo.com",
           "publicKey": "<SERVER_B_PUBLIC_KEY>",
           "shortId": "<SHORT_ID>",
-          "spiderX": "",
+          "spiderX": "/",
           "fingerprint": "chrome"
         },
-        "sockopt": {
-          "tcpFastOpen": true,
-          "tcpNoDelay": true,
-          "tcpKeepAliveIdle": 60,
-          "tcpKeepAliveInterval": 15
+        "xhttpSettings": {
+          "path": "/<YOUR_RANDOM_PATH>"
         }
-      },
-      "mux": {
-        "enabled": true,
-        "concurrency": 256,
-        "xudpConcurrency": 16,
-        "xudpProxyUDP443": "reject"
       }
     }
   ]

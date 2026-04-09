@@ -40,6 +40,11 @@ xray x25519
 openssl rand -hex 16
 # Сохраните вывод (например: 0123456789abcdef0123456789abcdef) — это <SHORT_ID>
 ```
+4. **Random Path (путь для xhttp):**
+```bash
+openssl rand -hex 8
+# Сохраните вывод (например, abc123def456), чтобы заменить <YOUR_RANDOM_PATH> в конфигах
+```
 
 ---
 
@@ -61,6 +66,7 @@ nano /usr/local/etc/xray/config.json
   },
   "inbounds": [
     {
+      "tag": "vless-in",
       "port": 443,
       "protocol": "vless",
       "settings": {
@@ -72,7 +78,7 @@ nano /usr/local/etc/xray/config.json
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "xhttp",
         "security": "reality",
         "realitySettings": {
           "dest": "yahoo.com:443",
@@ -83,31 +89,32 @@ nano /usr/local/etc/xray/config.json
           "shortIds": [
             "<SHORT_ID>"
           ]
+        },
+        "xhttpSettings": {
+          "path": "/<YOUR_RANDOM_PATH>",
+          "mode": "auto"
         }
-      },
-      "sockopt": {
-        "tcpFastOpen": true,
-        "tcpNoDelay": true,
-        "tcpKeepAliveIdle": 60,
-        "tcpKeepAliveInterval": 15
       }
     }
   ],
   "outbounds": [
     {
+      "tag": "tunnel-to-telemt",
       "protocol": "freedom",
-      "tag": "direct",
       "settings": {
         "destination": "127.0.0.1:8443"
       }
     }
   ],
   "routing": {
+    "domainStrategy": "AsIs",
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["all-in"],
-        "outboundTag": "direct"
+        "inboundTag": [
+          "vless-in"
+        ],
+        "outboundTag": "tunnel-to-telemt"
       }
     ]
   }
@@ -156,6 +163,7 @@ nano /usr/local/etc/xray/config.json
   ],
   "outbounds": [
     {
+      "tag": "vless-out",
       "protocol": "vless",
       "settings": {
         "vnext": [
@@ -172,27 +180,18 @@ nano /usr/local/etc/xray/config.json
         ]
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "xhttp",
         "security": "reality",
         "realitySettings": {
           "serverName": "yahoo.com",
           "publicKey": "<SERVER_B_PUBLIC_KEY>",
           "shortId": "<SHORT_ID>",
-          "spiderX": "",
+          "spiderX": "/",
           "fingerprint": "chrome"
         },
-        "sockopt": {
-          "tcpFastOpen": true,
-          "tcpNoDelay": true,
-          "tcpKeepAliveIdle": 60,
-          "tcpKeepAliveInterval": 15
+        "xhttpSettings": {
+          "path": "/<YOUR_RANDOM_PATH>"
         }
-      },
-      "mux": {
-        "enabled": true,
-        "concurrency": 256,
-        "xudpConcurrency": 16,
-        "xudpProxyUDP443": "reject"
       }
     }
   ]
