@@ -36,8 +36,11 @@ hello2 = "ad_tag2"
 On April 1, 2026, we became aware of a method for detecting MTProxy Fake-TLS, 
 based on the ECH extension and the ordering of cipher suites, 
 as well as an overall unique JA3/JA4 fingerprint 
-that does not occur in modern browsers: 
-we have already submitted initial changes to the Telegram Desktop developers and are working on updates for other clients.
+that does not occur in modern browsers.
+
+> [!IMPORTANT]
+> TLS fingerprint has been fixed in latest version of clients for Desktop / Android / iOS.  
+> Please update your client for MTProxy Fake-TLS to work correctly.
 
 - We consider this a breakthrough aspect, which has no stable analogues today
 - Based on this: if `telemt` configured correctly, **TLS mode is completely identical to real-life handshake + communication** with a specified host
@@ -154,6 +157,24 @@ Keep-Alive: timeout=60
 ### Why do you need a middle proxy (ME)
 https://github.com/telemt/telemt/discussions/167
 
+## How clients interact with Telegram DCs
+When you register a Telegram account, it gets permanently bound to one of Telegram's data centers (DCs).  
+It is deciced beforehand by Telegram based on the phone number's region.  
+This DC becomes your **home DC**: all content you upload (photos, videos, files, messages) is stored there.  
+Your client authenticates on it with every connection.  
+
+For example, if your account is registered on **DC2**, your client will always connect to DC2 first.  
+When you open a chat with another user whose home DC is **DC5**, your client opens an additional connection to DC5 to download their media.  
+Those cross-DC requests are normal and happen constantly.  
+
+> [!WARNING]
+> Because every session is anchored to your home DC, an outage there causes other DCs to be unavaliable.  
+> If your home DC is DC2 and DC2 goes down, you **cannot** reach DC5 even though DC5 itself is perfectly healthy.  
+> The client has no valid session to route the request through.  
+
+This is also why an MTProxy only needs to reach Telegram's DC infrastructure as a whole.  
+The proxy itself doesn't care which DC your account lives on. The client negotiates the correct DC through the proxy after connecting.
+
 ### How many people can use one link
 By default, an unlimited number of people can use a single link.  
 However, you can limit the number of unique IP addresses for each user:
@@ -161,7 +182,8 @@ However, you can limit the number of unique IP addresses for each user:
 [access.user_max_unique_ips]
 hello = 1
 ```
-This parameter sets the maximum number of unique IP addresses from which a single link can be used simultaneously. If the first user disconnects, a second one can connect. At the same time, multiple users can connect from a single IP address simultaneously (for example, devices on the same Wi-Fi network).
+This parameter sets the maximum number of unique IP addresses from which a single link can be used simultaneously. If the first user disconnects, a second one can connect.
+At the same time, multiple users can connect from a single IP address simultaneously (for example, devices on the same Wi-Fi network).
 
 ### How to create multiple different links
 1. Generate the required number of secrets using the command: `openssl rand -hex 16`.
